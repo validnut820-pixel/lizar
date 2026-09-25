@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Realistic Lizard</title>
+<style>
+  html, body { margin:0; padding:0; overflow:hidden; background:#e8e4c8; touch-action:none; -webkit-tap-highlight-color:transparent; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+addEventListener('resize', resize);
+resize();
+
+// ---------- Ящерица ----------
+const L = {
+  x: W/2, y: H/2,
+  angle: 0,
+  headOffset: 0,
+  speed: 2.4,
+  turnSpeed: 0.12,
+  walkPhase: 0,
+  moving: false,
+  fleeing: false,
+  mouthOpen: 0,
+  biting: false,
+  biteTimer: 0,
+  blinkTimer: 0,
+  blinking: false,
+  blinkDur: 0,
+  lookTimer: 0,
+  lookTarget: 0,
+  breath: 0,
+  bodyLen: 26,   // длина тела
+  bodyW: 13,     // ширина тела
+};
+
+// ---------- Ввод ----------
+let mouse = { x: W/2, y: H/2 };
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => { mouse.x = e.clientX; mouse.y = e.clientY; L.biting = true; L.biteTimer = 0; });
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  mouse.x = t.clientX; mouse.y = t.clientY;
+  L.biting = true; L.biteTimer = 0;
+}, { passive:false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  mouse.x = t.clientX; mouse.y = t.clientY;
+}, { passive:false });
+
+// ---------- Логика ----------
+function lerpAngle(a,b,t){
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI*2;
+  while (d < -Math.PI) d += Math.PI*2;
+  return a + d*t;
+}
+
+function update(dt){
+  const dx = mouse.x - L.x, dy = mouse.y - L.y;
+  const len = Math.hypot(dx, dy);
+
+  let targetAngle = Math.atan2(dy, dx);
+  L.fleeing = false;
+  let curSpeed = L.speed;
+
+  if (len < 75) { L.fleeing = true; targetAngle += Math.PI; curSpeed = L.speed*1.85; }
+
+  L.angle = lerpAngle(L.angle, targetAngle, L.turnSpeed);
+
+  let diff = Math.abs(((targetAngle - L.angle + Math.PI*3) % (Math.PI*2)) - Math.PI);
+  L.moving = false;
+  if (diff < 1.1 && (len > 30 || L.fleeing)) {
+    L.x += Math.cos(L.angle) * curSpeed;
+    L.y += Math.sin(L.angle) * curSpeed;
+    L.moving = true;
+  }
+
+  L.walkPhase += L.moving ? (L.fleeing ? 0.48 : 0.28) : 0.035;
+  L.breath += dt * 2;
+
+  const idle = !L.moving && !L.fleeing && !L.biting;
+  if (idle) {
+    L.lookTimer += dt;
+    if (L.lookTimer > 1.6) { L.lookTarget = (Math.random()-0.5) * Math.PI * 0.85; L.lookTimer = 0; }
+  } else L.lookTarget = 0;
+  L.headOffset += (L.lookTarget - L.headOffset) * 0.05;
+
+  L.blinkTimer += dt;
+  if (!L.blinking && L.blinkTimer > 2 + Math.random()*3) { L.blinking = true; L.blinkDur = 0; L.blinkTimer = 0; }
+  if (L.blinking) { L.blinkDur += dt; if (L.blinkDur > 0.14) L.blinking = false; }
+
+  if (L.biting) { L.biteTimer += dt; if (L.biteTimer > 0.35) L.biting = false; }
+
+  let tm = 0;
+  if (L.biting) tm = 7;
+  else if (L.fleeing || len < 90) tm = 3.5;
+  L.mouthOpen += (tm - L.mouthOpen) * 0.25;
+}
+
+// ---------- Рисование реалистичной ящерицы ----------
+
+// Чешуйки — точечный узор по телу
+function drawScales(cx, cy, rx, ry, angle, density=0.6, color='rgba(30,60,25,0.45)'){
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.fillStyle = color;
+  const step = 4.2 / density;
+  for (let yy = -ry; yy <= ry; yy += step) {
+    for (let xx = -rx; xx <= rx; xx += step) {
+      const nx = xx / rx, ny = yy / ry;
+      if (nx*nx + ny*ny <= 1) {
+        // Смещение рядов для шахматного узора
+        const rowOffset = (Math.round(yy/step) % 2) * step/2;
+        const px = xx + rowOffset;
+        if (px*px/(rx*rx) + ny*ny <= 1) {
+          ctx.beginPath();
+          ctx.arc(px, yy, 0.9, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+
+// Градиент тела
+function bodyGradient(cx, cy, r){
+  const g = ctx.createRadialGradient(cx - r*0.25, cy - r*0.35, r*0.1, cx, cy, r*1.05);
+  g.addColorStop(0.0, '#c4e88a');
+  g.addColorStop(0.35, '#8ec95a');
+  g.addColorStop(0.7, '#5a9e3e');
+  g.addColorStop(1.0, '#2f5f24');
+  return g;
+}
+
+function headGradient(cx, cy, r){
+  const g = ctx.createRadialGradient(cx - r*0.3, cy - r*0.4, r*0.05, cx, cy, r*1.1);
+  g.addColorStop(0.0, '#d4f0a0');
+  g.addColorStop(0.4, '#9ed36a');
+  g.addColorStop(0.75, '#5fa844');
+  g.addColorStop(1.0, '#2a5520');
+  return g;
+}
+
+function drawLizard(){
+  const breathScale = 1 + Math.sin(L.breath) * 0.025;
+  const a = L.angle;
+
+  // ---- Тень под ящерицей ----
+  ctx.save();
+  ctx.translate(L.x + 4, L.y + 7);
+  ctx.rotate(a);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, L.bodyLen + 8, L.bodyW + 3, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // ---- Хвост (сегменты с градиентом) ----
+  const tailN = 9;
+  for (let i = tailN - 1; i >= 0; i--) {
+    const dist = L.bodyLen + 4 + i * 9;
+    const wiggleAmp = L.moving ? (i+1) * (L.fleeing ? 2.4 : 1.6) : (i+1) * 0.3;
+    const wobble = Math.sin(L.walkPhase * 0.9 - i * 0.55) * wiggleAmp;
+
+    const tx = L.x - Math.cos(a) * dist;
+    const ty = L.y - Math.sin(a) * dist;
+    const perpX = Math.cos(a + Math.PI/2);
+    const perpY = Math.sin(a + Math.PI/2);
+    const px = tx + perpX * wobble;
+    const py = ty + perpY * wobble;
+
+    const r = 7.5 - i * 0.75;
+    if (r <= 0.5) continue;
+
+    ctx.fillStyle = bodyGradient(px, py, r);
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI*2);
+    ctx.fill();
+
+    // Чешуйки на хвосте
+    if (r > 2) {
+      ctx.fillStyle = 'rgba(30,60,25,0.35)';
+      const step = 3;
+      for (let yy = -r; yy <= r; yy += step) {
+        for (let xx = -r; xx <= r; xx += step) {
+          if (xx*xx + yy*yy < r*r*0.75) {
+            ctx.beginPath();
+            ctx.arc(px + xx, py + yy, 0.7, 0, Math.PI*2);
+            ctx.fill();
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Лапки с пальцами ----
+  const legs = [
+    { x:  L.bodyLen*0.55, y: -L.bodyW*0.9, phase: 0,           side: -1, front: true },
+    { x: -L.bodyLen*0.55, y: -L.bodyW*0.9, phase: Math.PI,     side: -1, front: false },
+    { x:  L.bodyLen*0.55, y:  L.bodyW*0.9, phase: Math.PI,     side:  1, front: true },
+    { x: -L.bodyLen*0.55, y:  L.bodyW*0.9, phase: 0,           side:  1, front: false },
+  ];
+
+  for (const leg of legs) {
+    const step = Math.sin(L.walkPhase + leg.phase);
+    const stepFwd = L.moving ? step * (L.fleeing ? 7 : 5) : step * 0.4;
+    const lift = L.moving ? Math.max(0, step) * (L.fleeing ? 2.6 : 1.8) : 0;
+
+    const lx = leg.x + stepFwd;
+    const ly = leg.y;
+
+    const worldX = L.x + Math.cos(a)*lx - Math.sin(a)*ly;
+    const worldY = L.y + Math.sin(a)*lx + Math.cos(a)*ly;
+
+    ctx.save();
+    ctx.translate(worldX, worldY - lift);
+    ctx.rotate(a + leg.side * 0.55);
+
+    // Верхняя часть лапки (бедро)
+    ctx.fillStyle = '#5a9e3e';
+    ctx.strokeStyle = '#2a5520';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 7, 3.2, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Пальцы (3 штуки)
+    const fingerSpread = 0.5;
+    for (let f = -1; f <= 1; f++) {
+      const fAngle = f * fingerSpread;
+      const fLen = 5;
+      const fx = Math.cos(fAngle) * fLen;
+      const fy = Math.sin(fAngle) * fLen;
+      ctx.strokeStyle = '#3b7a2c';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(3, 0);
+      ctx.lineTo(3 + fx, fy);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---- Тело ----
+  ctx.save();
+  ctx.translate(L.x, L.y);
+  ctx.rotate(a);
+  ctx.scale(breathScale, breathScale);
+
+  // Основная форма тела
+  ctx.fillStyle = bodyGradient(0, 0, L.bodyLen);
+  ctx.strokeStyle = '#2a5520';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, L.bodyLen, L.bodyW, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Чешуйки на теле (сетчатый узор)
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(0, 0, L.bodyLen, L.bodyW, 0, 0, Math.PI*2);
+  ctx.clip();
+  ctx.fillStyle = 'rgba(30,60,25,0.4)';
+  const st = 3.8;
+  for (let yy = -L.bodyW; yy <= L.bodyW; yy += st) {
+    for (let xx = -L.bodyLen; xx <= L.bodyLen; xx += st) {
+      const rowOff = (Math.round(yy/st) % 2) * st/2;
+      const nx = (xx + rowOff) / L.bodyLen;
+      const ny = yy / L.bodyW;
+      if (nx*nx + ny*ny <= 1) {
+        ctx.beginPath();
+        ctx.arc(xx + rowOff, yy, 0.75, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+
+  // Спинная полоса (тёмная)
+  ctx.fillStyle = 'rgba(40,80,30,0.55)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, L.bodyLen * 0.85, L.bodyW * 0.32, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Боковые тёмные пятна
+  ctx.fillStyle = 'rgba(35,70,28,0.5)';
+  for (let i = -2; i <= 2; i++) {
+    const px = i * 8;
+    ctx.beginPath();
+    ctx.arc(px, -L.bodyW * 0.55, 2.2, 0, Math.PI*2);
+    ctx.arc(px,  L.bodyW * 0.55, 2.2, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // Блик сверху
+  const hl = ctx.createLinearGradient(0, -L.bodyW, 0, 0);
+  hl.addColorStop(0, 'rgba(255,255,255,0.35)');
+  hl.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hl;
+  ctx.beginPath();
+  ctx.ellipse(0, -L.bodyW*0.4, L.bodyLen*0.7, L.bodyW*0.5, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // ---- Голова (отдельный поворот) ----
+  const headAngle = a + L.headOffset;
+  const headBaseX = L.x + Math.cos(a) * L.bodyLen * 0.92;
+  const headBaseY = L.y + Math.sin(a) * L.bodyLen * 0.92;
+  const headX = headBaseX + Math.cos(headAngle) * 5;
+  const headY = headBaseY + Math.sin(headAngle) * 5;
+
+  ctx.save();
+  ctx.translate(headX, headY);
+  ctx.rotate(headAngle);
+
+  // Форма головы (вытянутая)
+  ctx.fillStyle = headGradient(0, 0, 13);
+  ctx.strokeStyle = '#2a5520';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 13, 10, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Чешуйки на голове
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 13, 10, 0, 0, Math.PI*2);
+  ctx.clip();
+  ctx.fillStyle = 'rgba(30,60,25,0.4)';
+  for (let yy = -10; yy <= 10; yy += 3) {
+    for (let xx = -13; xx <= 13; xx += 3) {
+      if (xx*xx/169 + yy*yy/100 <= 1) {
+        const rowOff = (Math.round(yy/3) % 2) * 1.5;
+        ctx.beginPath();
+        ctx.arc(xx + rowOff, yy, 0.6, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+
+  // Блик на голове
+  const hh = ctx.createLinearGradient(0, -10, 0, 0);
+  hh.addColorStop(0, 'rgba(255,255,255,0.4)');
+  hh.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hh;
+  ctx.beginPath();
+  ctx.ellipse(0, -4, 10, 5, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Рот
+  if (L.mouthOpen > 0.3) {
+    ctx.strokeStyle = '#1a3a15';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(3, 2.5);
+    ctx.lineTo(3 + L.mouthOpen, 2.5);
+    ctx.stroke();
+
+    if (L.biting && L.mouthOpen > 3) {
+      // Розовый язык
+      ctx.strokeStyle = '#e05070';
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(3, 2.5);
+      ctx.lineTo(3 + L.mouthOpen * 1.3, 2.5);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
+  } else {
+    // Линия рта (закрыт)
+    ctx.strokeStyle = 'rgba(30,60,25,0.6)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(3, 2.5);
+    ctx.lineTo(11, 2.5);
+    ctx.stroke();
+  }
+
+  // Ноздря
+  ctx.fillStyle = '#1a3a15';
+  ctx.beginPath();
+  ctx.arc(10.5, -1, 0.9, 0, Math.PI*2);
+  ctx.fill();
+
+  // Глаз
+  const eyeX = 4, eyeY = -3.5;
+  if (!L.blinking) {
+    // Белок
+    ctx.fillStyle = '#f5f0d0';
+    ctx.beginPath();
+    ctx.arc(eyeX, eyeY, 3.4, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#1a3a15';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+
+    // Радужка (жёлто-зелёная, как у ящериц)
+    const irisGrad = ctx.createRadialGradient(eyeX+1, eyeY, 0.3, eyeX+1, eyeY, 2.4);
+    irisGrad.addColorStop(0, '#f0d040');
+    irisGrad.addColorStop(1, '#8a7020');
+    ctx.fillStyle = irisGrad;
+    ctx.beginPath();
+    ctx.arc(eyeX + 0.8, eyeY, 2.3, 0, Math.PI*2);
+    ctx.fill();
+
+    // Зрачок (вертикальный, как у ящериц)
+    ctx.fillStyle = '#0a0a0a';
+    ctx.beginPath();
+    ctx.ellipse(eyeX + 0.8, eyeY, 0.6, 2.0, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Блик
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.beginPath();
+    ctx.arc(eyeX + 0.2, eyeY - 1.1, 0.7, 0, Math.PI*2);
+    ctx.fill();
+
+    // Верхнее веко (чешуйка над глазом)
+    ctx.strokeStyle = '#2a5520';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(eyeX, eyeY, 3.6, Math.PI * 1.15, Math.PI * 1.95);
+    ctx.stroke();
+  } else {
+    // Моргание
+    ctx.strokeStyle = '#2a5520';
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(eyeX - 3, eyeY);
+    ctx.lineTo(eyeX + 3, eyeY);
+    ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+
+  ctx.restore();
+}
+
+// ---------- Цикл ----------
+let last = performance.now();
+function loop(now){
+  const dt = Math.min((now - last)/1000, 0.05);
+  last = now;
+
+  update(dt);
+
+  // Фон — как земля/трава
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#e8e4c8');
+  bg.addColorStop(1, '#d8d4a8');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  drawLizard();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
